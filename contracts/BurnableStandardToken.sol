@@ -1,178 +1,203 @@
-pragma solidity ^0.4.18;
+pragma solidity ^0.4.24;
 
-import "./BasicToken.sol";
-import "./ERC20.sol";
 
-contract tokenRecipient {function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData);}
+// ----------------------------------------------------------------------------
+// Safe maths
+// ----------------------------------------------------------------------------
+contract SafeMath {
+    function safeAdd(uint a, uint b) internal pure returns (uint c) {
+        c = a + b;
+        require(c >= a);
+    }
+    function safeSub(uint a, uint b) internal pure returns (uint c) {
+        require(b <= a);
+        c = a - b;
+    }
+    function safeMul(uint a, uint b) internal pure returns (uint c) {
+        c = a * b;
+        require(a == 0 || c / a == b);
+    }
+    function safeDiv(uint a, uint b) internal pure returns (uint c) {
+        require(b > 0);
+        c = a / b;
+    }
+}
 
-/**
- * @title Standard ERC20 token
- *
- * @dev Implementation of the basic standard token.
- * @dev https://github.com/ethereum/EIPs/issues/20
- * @dev Based on code by FirstBlood: https://github.com/Firstbloodio/token/blob/master/smart_contract/FirstBloodToken.sol
- */
-contract BurnableStandardToken is ERC20, BasicToken {
 
-    /* Public variables of the token */
-    string public standard = 'ERC20';
+// ----------------------------------------------------------------------------
+// ERC Token Standard #20 Interface
+// ----------------------------------------------------------------------------
+contract ERC20Interface {
+    function totalSupply() public constant returns (uint);
+    function balanceOf(address tokenOwner) public constant returns (uint balance);
+    function allowance(address tokenOwner, address spender) public constant returns (uint remaining);
+    function transfer(address to, uint tokens) public returns (bool success);
+    function approve(address spender, uint tokens) public returns (bool success);
+    function transferFrom(address from, address to, uint tokens) public returns (bool success);
 
-    string public name;
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+}
 
-    string public symbol;
 
-    uint8 public decimals;
+// ----------------------------------------------------------------------------
+// Contract function to receive approval and execute function in one call
+//
+// Borrowed from MiniMeToken
+// ----------------------------------------------------------------------------
+contract ApproveAndCallFallBack {
+    function receiveApproval(address from, uint256 tokens, address token, bytes data) public;
+}
 
-    uint256 public totalSupply;
 
+// ----------------------------------------------------------------------------
+// Owned contract
+// ----------------------------------------------------------------------------
+contract Owned {
     address public owner;
 
-    mapping (address => mapping (address => uint256)) internal allowed;
+    event OwnershipTransferred(address indexed _from, address indexed _to);
 
-    function BurnableStandardToken(
+    constructor() public {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner {
+        require(msg.sender == owner);
+        _;
+    }
+
+
+
+}
+
+
+// ----------------------------------------------------------------------------
+// ERC20 Token, with the addition of symbol, name and decimals and assisted
+// token transfers
+// ----------------------------------------------------------------------------
+contract Token is ERC20Interface, Owned, SafeMath {
+    string public symbol;
+    string public  name;
+    uint public decimals;
+    uint private _totalSupply;
+
+    mapping(address => uint) balances;
+    mapping(address => mapping(address => uint)) allowed;
+
+
+    // ------------------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------------------
+    constructor(
         uint256 initialSupply,
         string tokenName,
         uint8 decimalUnits,
         string tokenSymbol
-    ) {
-        balances[msg.sender] = initialSupply;
-        // Give the creator all initial tokens
-        totalSupply = initialSupply;
-        // Update total supply
-        name = tokenName;
-        // Set the name for display purposes
+    ) public {
         symbol = tokenSymbol;
-        // Set the symbol for display purposes
+        name = tokenName;
         decimals = decimalUnits;
-        // Amount of decimals for display purposes
-
-        owner=msg.sender;
+        _totalSupply = initialSupply;
+        _totalSupply = _totalSupply * 10 ** decimals;
+        balances[owner] = _totalSupply;
+        emit Transfer(address(0), owner, _totalSupply);
     }
 
-    modifier onlyOwner {
-        if (msg.sender != owner) throw;
-        _;
+
+    // ------------------------------------------------------------------------
+    // Total supply
+    // ------------------------------------------------------------------------
+    function totalSupply() public constant returns (uint) {
+        return _totalSupply;
     }
 
-    /**
-     * @dev Transfer tokens from one address to another
-     * @param _from address The address which you want to send tokens from
-     * @param _to address The address which you want to transfer to
-     * @param _value uint256 the amount of tokens to be transferred
-     */
-    function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
-        require(_to != address(0));
-        require(_value <= balances[_from]);
-        require(_value <= allowed[_from][msg.sender]);
 
-        balances[_from] = balances[_from].sub(_value);
-        balances[_to] = balances[_to].add(_value);
-        allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
-        Transfer(_from, _to, _value);
+    // ------------------------------------------------------------------------
+    // Get the token balance for account tokenOwner
+    // ------------------------------------------------------------------------
+    function balanceOf(address tokenOwner) public constant returns (uint balance) {
+        return balances[tokenOwner];
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Transfer the balance from token owner's account to to account
+    // - Owner's account must have sufficient balance to transfer
+    // - 0 value transfers are allowed
+    // ------------------------------------------------------------------------
+    function transfer(address to, uint tokens) public returns (bool success) {
+        balances[msg.sender] = safeSub(balances[msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(msg.sender, to, tokens);
         return true;
     }
 
-    /**
-     * @dev Approve the passed address to spend the specified amount of tokens on behalf of msg.sender.
-     *
-     * Beware that changing an allowance with this method brings the risk that someone may use both the old
-     * and the new allowance by unfortunate transaction ordering. One possible solution to mitigate this
-     * race condition is to first reduce the spender's allowance to 0 and set the desired value afterwards:
-     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
-     * @param _spender The address which will spend the funds.
-     * @param _value The amount of tokens to be spent.
-     */
-    function approve(address _spender, uint256 _value) public returns (bool) {
-        allowed[msg.sender][_spender] = _value;
-        Approval(msg.sender, _spender, _value);
+
+    // ------------------------------------------------------------------------
+    // Token owner can approve for spender to transferFrom(...) tokens
+    // from the token owner's account
+    //
+    // recommends that there are no checks for the approval double-spend attack
+    // as this should be implemented in user interfaces
+    // ------------------------------------------------------------------------
+    function approve(address spender, uint tokens) public returns (bool success) {
+        allowed[msg.sender][spender] = tokens;
+        emit Approval(msg.sender, spender, tokens);
         return true;
     }
 
-    function multiApprove(address[] _spender, uint256[] _value) public returns (bool){
-        require(_spender.length == _value.length);
-        for(uint i=0;i<=_spender.length;i++){
-            allowed[msg.sender][_spender[i]] = _value[i];
-            Approval(msg.sender, _spender[i], _value[i]);
-        }
-        return true;
-    }
-    /**
-     * @dev Function to check the amount of tokens that an owner allowed to a spender.
-     * @param _owner address The address which owns the funds.
-     * @param _spender address The address which will spend the funds.
-     * @return A uint256 specifying the amount of tokens still available for the spender.
-     */
-    function allowance(address _owner, address _spender) public view returns (uint256) {
-        return allowed[_owner][_spender];
-    }
 
-    /**
-     * @dev Increase the amount of tokens that an owner allowed to a spender.
-     *
-     * approve should be called when allowed[_spender] == 0. To increment
-     * allowed value is better to use this function to avoid 2 calls (and wait until
-     * the first transaction is mined)
-     * From MonolithDAO Token.sol
-     * @param _spender The address which will spend the funds.
-     * @param _addedValue The amount of tokens to increase the allowance by.
-     */
-    function increaseApproval(address _spender, uint _addedValue) public returns (bool) {
-        allowed[msg.sender][_spender] = allowed[msg.sender][_spender].add(_addedValue);
-        Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+    // ------------------------------------------------------------------------
+    // Transfer tokens from the from account to the to account
+    //
+    // The calling account must already have sufficient tokens approve(...)-d
+    // for spending from the from account and
+    // - From account must have sufficient balance to transfer
+    // - Spender must have sufficient allowance to transfer
+    // - 0 value transfers are allowed
+    // ------------------------------------------------------------------------
+    function transferFrom(address from, address to, uint tokens) public returns (bool success) {
+        balances[from] = safeSub(balances[from], tokens);
+        allowed[from][msg.sender] = safeSub(allowed[from][msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(from, to, tokens);
         return true;
     }
 
-    function multiIncreaseApproval(address[] _spender, uint[] _addedValue) public returns (bool) {
-        require(_spender.length == _addedValue.length);
-        for(uint i=0;i<=_spender.length;i++){
-            allowed[msg.sender][_spender[i]] = allowed[msg.sender][_spender[i]].add(_addedValue[i]);
-            Approval(msg.sender, _spender[i], allowed[msg.sender][_spender[i]]);
-        }
-        return true;
+
+    // ------------------------------------------------------------------------
+    // Returns the amount of tokens approved by the owner that can be
+    // transferred to the spender's account
+    // ------------------------------------------------------------------------
+    function allowance(address tokenOwner, address spender) public constant returns (uint remaining) {
+        return allowed[tokenOwner][spender];
     }
-    /**
-     * @dev Decrease the amount of tokens that an owner allowed to a spender.
-     *
-     * approve should be called when allowed[_spender] == 0. To decrement
-     * allowed value is better to use this function to avoid 2 calls (and wait until
-     * the first transaction is mined)
-     * From MonolithDAO Token.sol
-     * @param _spender The address which will spend the funds.
-     * @param _subtractedValue The amount of tokens to decrease the allowance by.
-     */
-    function decreaseApproval(address _spender, uint _subtractedValue) public returns (bool) {
-        uint oldValue = allowed[msg.sender][_spender];
-        if (_subtractedValue > oldValue) {
-            allowed[msg.sender][_spender] = 0;
-        } else {
-            allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
-        }
-        Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+
+
+    // ------------------------------------------------------------------------
+    // Token owner can approve for spender to transferFrom(...) tokens
+    // from the token owner's account. The spender contract function
+    // receiveApproval(...) is then executed
+    // ------------------------------------------------------------------------
+    function approveAndCall(address spender, uint tokens, bytes data) public returns (bool success) {
+        allowed[msg.sender][spender] = tokens;
+        emit Approval(msg.sender, spender, tokens);
+        ApproveAndCallFallBack(spender).receiveApproval(msg.sender, tokens, this, data);
         return true;
     }
 
-    function multiDecreaseApproval(address[] _spender, uint[] _subtractedValue) public returns (bool) {
-        require(_spender.length == _subtractedValue.length);
-        for(uint i=0;i<=_spender.length;i++){
-            uint oldValue = allowed[msg.sender][_spender[i]];
-            if (_subtractedValue[i] > oldValue) {
-                allowed[msg.sender][_spender[i]] = 0;
-            } else {
-                allowed[msg.sender][_spender[i]] = oldValue.sub(_subtractedValue[i]);
-            }
-            Approval(msg.sender, _spender[i], allowed[msg.sender][_spender[i]]);
-        }
-        return true;
+
+    // ------------------------------------------------------------------------
+    // Don't accept ETH
+    // ------------------------------------------------------------------------
+    function () public payable {
+        revert();
     }
 
-    /* Approve and then comunicate the approved contract in a single tx */
-    function approveAndCall(address _spender, uint256 _value, bytes _extraData)
-    returns (bool success) {
-        tokenRecipient spender = tokenRecipient(_spender);
-        if (approve(_spender, _value)) {
-            spender.receiveApproval(msg.sender, _value, this, _extraData);
-            return true;
-        }
+
+    function transferOwnership(address _newOwner) public onlyOwner {
+        owner = _newOwner;
     }
 
 
@@ -181,13 +206,14 @@ contract BurnableStandardToken is ERC20, BasicToken {
      * account.
      * @param account The account whose tokens will be burnt.
      * @param value The amount that will be burnt.
-    */
+     */
     function burn(address account, uint256 value) public onlyOwner {
         require(account != address(0));
 
-        totalSupply = totalSupply.sub(value);
-        balances[account] = balances[account].sub(value);
-        Transfer(account, address(0), value);
+        _totalSupply = safeSub(_totalSupply, value);
+        balances[account] = safeSub(balances[account], value);
+        emit Transfer(account, address(0), value);
     }
-
 }
+
+
